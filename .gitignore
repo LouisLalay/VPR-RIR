@@ -1,0 +1,20 @@
+# Media
+*.pdf
+*.wav
+*.png
+*.jpg
+*.tex
+*.txt
+
+# python
+**/__pycache__
+*.pkl
+*.ipynb
+
+# workspace
+**/run*
+**/data/
+**/figures/
+**/.vscode
+**/test*
+**/TODO*
