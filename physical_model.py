@@ -1,6 +1,11 @@
-from signal_processing_utils import torch_polyval, torch_polyval_flipped
+from signal_processing_utils import (
+    impulse_response,
+    torch_polyval_flipped,
+    torch_polyval,
+)
 from torch.nn import Module, Parameter
 from torch.nn.functional import conv1d
+from torchaudio.functional import convolve
 import torch
 
 
@@ -168,3 +173,95 @@ class PhysicalRIRModel(Module):
         Rs = torch_polyval_flipped(rh, values.real**2 + values.imag**2)
 
         return (Gs.real**2 + Gs.imag**2) @ Rs / self.Nfft
+
+    def lvecmul_G_inv(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute G_inv @ x, or (G @ G0)_inv @ x if zeros are forced.
+
+        Args
+        ----
+        x: torch.Tensor
+            Signal to be filtered, shape (Lh)
+        Returns
+        -------
+        torch.Tensor
+            Filtered signal, shape (Lh)
+        """
+        # 512 should be enough for Lg <= 80
+        if self.g0 is not None:
+            num = torch.zeros_like(self.g)
+            num[: len(self.g0_inv)] = self.g0_inv
+            g_inv = impulse_response(self.g, numerator=num, n_fft=512)
+        else:
+            num = torch.zeros_like(self.g)
+            num[0] = 1.0
+            g_inv = impulse_response(self.g, numerator=num, n_fft=512)
+        kernel = g_inv.flip(0).view(1, 1, -1)
+
+        return conv1d(
+            input=x.expand(1, 1, -1),
+            weight=kernel,
+            padding=kernel.shape[-1] - 1,
+        ).squeeze()[: x.shape[0]]
+
+    def lvecmul_PE_inv(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute PE_inv @ x
+
+        Args
+        -----
+        x: torch.Tensor
+            Signal to be filtered, shape (Lh)
+
+        Returns
+        -------
+        torch.Tensor
+            Filtered signal, shape (Lh)
+        """
+        # We stop the computations of q early
+        # if the coefficients are small enough
+        # for a certain number of iterations
+        threshold = 1e-9
+        n_iter = 0
+        iter_limit = self.Lp
+
+        q = torch.zeros(self.Lh - 1)
+        q[0] = 1 / self.p[0]
+        P = torch.zeros(self.Lh, self.Lh)
+        P[0, 0] = 1.0
+
+        conv = self.p.data.clone()
+        for n in range(1, self.Lh - 1):
+            conv_len = min(self.Lh - n, len(conv))
+            P[n : n + conv_len, n] = conv[:conv_len]
+            conv = convolve(conv, self.p[:conv_len])
+
+            s = P[n + 1, 1 : n + 1] @ q[:n]
+            q[n] = -s / conv[0]
+            if abs(q[n]) < threshold:
+                n_iter += 1
+                if n_iter > iter_limit:
+                    break
+            else:
+                n_iter = 0
+
+        Q_fourier: torch.Tensor = torch.fft.fft(q * torch.exp(-self.a), self.Nfft)
+        Y_fourier = torch_polyval_flipped(x, Q_fourier * self.omega)
+        y: torch.Tensor = torch.fft.ifft(Y_fourier, dim=0)[: self.Lh]
+        return y.real
+
+    def lvecmul_PEG_inv(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute PEG_inv @ x
+
+        Args
+        -----
+        x: torch.Tensor
+            Signal to be filtered, shape (Lh)
+
+        Returns
+        -------
+        torch.Tensor
+            Filtered signal, shape (Lh)
+        """
+        return self.lvecmul_G_inv(self.lvecmul_PE_inv(x))

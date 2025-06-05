@@ -1,4 +1,5 @@
 from torch import Tensor
+from scipy.signal import dimpulse
 import numpy as np
 import torch
 
@@ -62,21 +63,37 @@ def torch_polyval_flipped(p: Tensor, x: Tensor) -> Tensor:
     return y
 
 
-def inverse_g(g: Tensor, n_fft: int = 1024) -> Tensor:
+def impulse_response(
+    denominator: Tensor,
+    n_fft: int = 1024,
+    numerator: Tensor = torch.tensor([1.0]),
+) -> Tensor:
     """
-    Compute the inverse IR of g if g is stable.
+    Compute the impulse response of a filter given its transfer function coefficients
+    using the `dimpulse` function from scipy.
 
     Args
     -----
-    g: Tensor
-        Impulse response g, shape (Lg)
-
+    denominator: Tensor
+        The coefficients of the denominator of the transfer function, shape (L)
+    n_fft: int
+        The number of points in the FFT, used to compute the impulse response,
+        defaults to 1024
+    numerator: Tensor
+        The coefficients of the numerator of the transfer function, shape (M),
+        defaults to [1.0] (i.e., no numerator)
     Returns
     -------
     Tensor
-        Inverse of g, shape (n_fft)
+        The impulse response of the filter, shape (n_fft - L + 1)
     """
-    return torch.fft.irfft(1 / torch.fft.rfft(g, n_fft)).real
+    _, y = dimpulse(
+        (numerator.detach().cpu().numpy(), denominator.detach().cpu().numpy(), 1),
+        n=n_fft,
+    )
+    g_inv = torch.tensor(y[0]).squeeze()
+
+    return g_inv.to(denominator)
 
 
 def linear_regression(x: Tensor, y: Tensor) -> tuple[float, float]:
