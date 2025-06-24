@@ -36,6 +36,7 @@ def filter_fig(g: Tensor, g0_inv: Tensor, a: Tensor, p: Tensor):
     g_axis.set_title("Filter g")
     filter_plot(p * exp(a), tensor(1), p_axis)
     p_axis.set_title("Filter p * exp(a)")
+    fig.tight_layout()
 
     return fig
 
@@ -65,5 +66,48 @@ def rir_fig(mu_h: Tensor, r_h: Tensor, sr: int, ref_rir: Tensor = None):
     r_h_axis.set_xlabel("Time (s)")
     r_h_axis.set_ylabel("Variance")
     r_h_axis.grid()
+    fig.tight_layout()
+
+    return fig
+
+
+def rir_spectrograms(
+    mu_h: Tensor,
+    generated_rir: Tensor,
+    sr: int,
+    ref_rir: Tensor = None,
+):
+    if ref_rir is not None:
+        rirs = {
+            "Estimated RIR": mu_h,
+            "Reference RIR": ref_rir,
+            "Generated RIR": generated_rir,
+        }
+    else:
+        rirs = {
+            "Estimated RIR": mu_h,
+            "Generated RIR": generated_rir,
+        }
+
+    axes: list[plt.Axes]
+    fig, axes = plt.subplots(1, len(rirs), figsize=(len(rirs) * 6, 5))
+
+    nfft = 1024 if mu_h.shape[0] > 1024 else mu_h.shape[0] // 10
+    for k, (key, h) in enumerate(rirs.items()):
+        axis = axes[k]
+        _, _, _, cax = axis.specgram(
+            (h).detach().cpu().numpy(),
+            Fs=sr,
+            NFFT=nfft,
+            noverlap=nfft // 2,
+            cmap="inferno",
+            scale="dB",
+            vmin=-80,
+        )
+        axis.set_title(key)
+        axis.set_xlabel("Time (s)")
+        axis.set_ylabel("Frequency (Hz)")
+        fig.colorbar(cax, ax=axis, label="Amplitude (dB)")
+        fig.tight_layout()
 
     return fig
