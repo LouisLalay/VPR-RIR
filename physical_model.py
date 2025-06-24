@@ -53,12 +53,13 @@ class PhysicalRIRModel(Module):
         if force_zeros:
             # g0: forced zeros of filter g
             self.register_buffer(
-                "g0_inv", torch.tensor([1, 0, -1], dtype=torch.get_default_dtype())
+                "g0_inv",
+                torch.tensor([1, 0, -1], dtype=torch.get_default_dtype()),
             )
-            self.register_buffer(
-                "g0",
-                torch.tensor([1, 0, 1, 0, 1, 0, 1], dtype=torch.get_default_dtype()),
-            )
+            # Ensure g0 is symetric so we save flip in the kernel computation
+            Lg0 = Lh if Lh % 2 else Lh - 1
+            g0 = (torch.arange(Lg0, dtype=torch.get_default_dtype()) + 1) % 2
+            self.register_buffer("g0", g0)
         else:
             self.g0_inv = None
             self.g0 = None
@@ -225,9 +226,9 @@ class PhysicalRIRModel(Module):
         n_iter = 0
         iter_limit = self.Lp
 
-        q = torch.zeros(self.Lh - 1)
+        q = torch.zeros(self.Lh - 1, device=x.device, dtype=x.dtype)
         q[0] = 1 / self.p[0]
-        P = torch.zeros(self.Lh, self.Lh)
+        P = torch.zeros(self.Lh, self.Lh, device=x.device, dtype=x.dtype)
         P[0, 0] = 1.0
 
         conv = self.p.data.clone()
