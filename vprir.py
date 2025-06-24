@@ -3,7 +3,7 @@ from datetime import datetime
 from metrics import compare, evaluate
 from pathlib import Path
 from physical_model import PhysicalRIRModel
-from plot_utils import filter_fig, rir_fig
+from plot_utils import filter_fig, rir_fig, rir_spectrograms
 from signal_processing_utils import stabilize_filter
 from torch import Tensor
 from torch.nn import Module, Parameter
@@ -21,6 +21,7 @@ class VPRIR(Module):
 
     y: Tensor
     s: Tensor
+    epsilon_sample: Tensor
 
     def __init__(
         self,
@@ -71,6 +72,7 @@ class VPRIR(Module):
 
         self.register_buffer("y", reverberant_signal)
         self.register_buffer("s", source)
+        self.register_buffer("epsilon_sample", torch.randn(Lh))
 
         self.to(device)
 
@@ -172,6 +174,17 @@ class VPRIR(Module):
             step,
         )
 
+        # Generate a RIR from the model parameters
+        with torch.no_grad():
+            h_model = self.physical_model.lvecmul_PEG_inv(
+                self.epsilon_sample * self.physical_model.sigma_epsilon_2**0.5
+            )
+        self.logger.add_figure(
+            "Spectrograms",
+            rir_spectrograms(self.mu_h, h_model, ref_rir=self.reference_h, sr=self.sr),
+            step,
+        )
+
         # Metrics
         if self.reference_h is not None:
             metrics = compare(self.reference_h, self.mu_h, self.sr)
@@ -222,7 +235,6 @@ class VPRIR(Module):
         and only continue after a crash or for precision.
         """
 
-        self.start_new = False
         last_exp_path = Path(last_exp_path)
 
         # Check the compatibility of the two experiments
@@ -255,3 +267,4 @@ class VPRIR(Module):
         self.optimizer.load_state_dict(opti_state)
 
         self.last_loss = self.loss().item()
+        self.start_new = False
