@@ -1,12 +1,12 @@
 # VPR-RIR
 
 This project contains the code for the paper "Unified Variational and Physics-aware Model for Room Impulse Response
-Estimation" by Louis Lalay, Matthieu Fontaine and Roland Badeau. If this code is useful for your research, please cite the [paper](https://link.html):
+Estimation" by Louis Lalay, Mathieu Fontaine and Roland Badeau. If this code is useful for your research, please cite the [paper](https://link.html):
 
 ```
-@inproceedings{lalay2023vpr,
+@inproceedings{lalay2025vprrir,
   title={Unified Variational and Physics-aware Model for Room Impulse Response Estimation},
-  author={Lalay, Louis and Fontaine, Matthieu and Badeau, Roland},
+  author={Lalay, Louis and Fontaine, Mathieu and Badeau, Roland},
   booktitle={2025, IEEE Interspeech},
   year={2025},
   organization={IEEE}

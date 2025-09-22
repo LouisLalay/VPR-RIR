@@ -3,6 +3,7 @@ from signal_processing_utils import (
     torch_polyval_flipped,
     torch_polyval,
 )
+from time import time
 from torch.nn import Module, Parameter
 from torch.nn.functional import conv1d
 from torchaudio.functional import convolve
@@ -41,14 +42,14 @@ class PhysicalRIRModel(Module):
         g = torch.zeros(Lg)
         g[0] = 1
         # a: no decay
-        a = torch.tensor(0.0)
+        a = torch.tensor(0.01)
         # p: identity filter
         p = torch.zeros(Lp)
         p[0] = 1
         # Energy of the base noise for the rir
-        sigma_epsilon_2 = torch.tensor(1.0)
+        sigma_epsilon_2 = torch.tensor(0.5)
         # Energy of the error
-        sigma_w_2 = torch.tensor(1.0)
+        sigma_w_2 = torch.tensor(0.5)
 
         if force_zeros:
             # g0: forced zeros of filter g
@@ -77,7 +78,6 @@ class PhysicalRIRModel(Module):
             "omega", torch.exp(-2 * 1j * torch.pi * torch.arange(self.Nfft) / self.Nfft)
         )
 
-    @torch.compile()
     def lvecmul_G(self, x: torch.Tensor) -> torch.Tensor:
         """
         Compute G @ x, or G @ G0 @ x if zeros are forced.
@@ -125,7 +125,7 @@ class PhysicalRIRModel(Module):
         )
         Y_fourier = torch_polyval_flipped(x, self.P_fourier * self.omega)
         y: torch.Tensor = torch.fft.ifft(Y_fourier, dim=0)[: self.Lh]
-        return y.real
+        return y.real[: x.shape[0]]
 
     # @torch.compile(mode="reduce-overhead")
     def lvecmul_PEG(self, x: torch.Tensor) -> torch.Tensor:
@@ -249,7 +249,7 @@ class PhysicalRIRModel(Module):
         Q_fourier: torch.Tensor = torch.fft.fft(q * torch.exp(-self.a), self.Nfft)
         Y_fourier = torch_polyval_flipped(x, Q_fourier * self.omega)
         y: torch.Tensor = torch.fft.ifft(Y_fourier, dim=0)[: self.Lh]
-        return y.real
+        return y.real[: x.shape[0]]
 
     def lvecmul_PEG_inv(self, x: torch.Tensor) -> torch.Tensor:
         """

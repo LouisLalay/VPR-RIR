@@ -25,7 +25,7 @@ def filter_plot(
     axis.grid()
     axis.set_xlabel("Frequency (normalized)")
     axis.set_ylabel("Amplitude (dB)")
-    axis.set_title("Filter g")
+    axis.set_title("Filter $g$")
 
 
 def filter_fig(g: Tensor, g0_inv: Tensor, a: Tensor, p: Tensor):
@@ -35,7 +35,7 @@ def filter_fig(g: Tensor, g0_inv: Tensor, a: Tensor, p: Tensor):
     filter_plot(g, g0_inv, g_axis)
     g_axis.set_title("Filter g")
     filter_plot(p * exp(a), tensor(1), p_axis)
-    p_axis.set_title("Filter p * exp(a)")
+    p_axis.set_title(r"Filter $p \cdot e^{a}$")
     fig.tight_layout()
 
     return fig
@@ -50,7 +50,13 @@ def rir_fig(mu_h: Tensor, r_h: Tensor, sr: int, ref_rir: Tensor = None):
 
     if ref_rir is not None:
         mu_h_axis.plot(time, mu_h.detach().cpu(), label="mu_h")
-        mu_h_axis.plot(time, ref_rir.detach().cpu(), "C3", label="Reference", alpha=0.5)
+        mu_h_axis.plot(
+            np.arange(ref_rir.shape[0]) / sr,
+            ref_rir.detach().cpu(),
+            "C3",
+            label="Reference",
+            alpha=0.5,
+        )
         mu_h_axis.set_title("Estimated RIR vs Reference")
         mu_h_axis.legend()
     else:
@@ -96,7 +102,7 @@ def rir_spectrograms(
     for k, (key, h) in enumerate(rirs.items()):
         axis = axes[k]
         _, _, _, cax = axis.specgram(
-            (h).detach().cpu().numpy(),
+            (h / h.abs().max()).detach().cpu().numpy(),
             Fs=sr,
             NFFT=nfft,
             noverlap=nfft // 2,
@@ -109,5 +115,32 @@ def rir_spectrograms(
         axis.set_ylabel("Frequency (Hz)")
         fig.colorbar(cax, ax=axis, label="Amplitude (dB)")
         fig.tight_layout()
+
+    return fig
+
+
+def generated_rir_fig(generated_rir: Tensor, sr: int, reference_rir: Tensor = None):
+    fig, ax = plt.subplots(figsize=(6, 5))
+    time = np.arange(generated_rir.shape[0]) / sr
+
+    if reference_rir is not None:
+        ax.plot(time, generated_rir.detach().cpu(), label="Generated RIR")
+        ax.plot(
+            np.arange(reference_rir.shape[0]) / sr,
+            reference_rir.detach().cpu(),
+            "C3",
+            label="Reference RIR",
+            alpha=0.5,
+        )
+        ax.set_title("Generated RIR vs Reference RIR")
+        ax.legend()
+    else:
+        ax.plot(time, generated_rir.detach().cpu())
+        ax.set_title("Generated RIR")
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Amplitude")
+    ax.grid()
+    fig.tight_layout()
 
     return fig

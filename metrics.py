@@ -26,7 +26,7 @@ def to_dB(x: Tensor) -> Tensor:
         x_dB: Tensor:
             dB value of x.
     """
-    return 10 * torch.log10(x)
+    return 10 * torch.log10(x.clamp(min=ALMOST_ZERO))
 
 
 def find_first_peak(power: Tensor, sr: int) -> tuple[int, int]:
@@ -394,9 +394,19 @@ def compare(rir_ref: Tensor, rir_est: Tensor, sr: int) -> dict[str, float]:
     """
     # Truncate the RIRs to the same length
     rir_est = rir_est.to(rir_ref.device)
-    Lh = min(rir_ref.shape[0], rir_est.shape[0])
-    rir_ref = rir_ref[:Lh]
-    rir_est = rir_est[:Lh]
+    Lh = max(rir_ref.shape[0], rir_est.shape[0])
+    rir_ref = torch.nn.functional.pad(
+        rir_ref,
+        (0, Lh - rir_ref.shape[0]),
+        mode="constant",
+        value=0,
+    )
+    rir_est = torch.nn.functional.pad(
+        rir_est,
+        (0, Lh - rir_est.shape[0]),
+        mode="constant",
+        value=0,
+    )
 
     m_ref = evaluate(rir_ref, sr)
     m_est = evaluate(rir_est, sr)

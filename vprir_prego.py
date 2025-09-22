@@ -1,20 +1,23 @@
 from constants import ALMOST_ZERO
 from datetime import datetime
+from time import time
 from metrics import compare, evaluate
 from pathlib import Path
 from physical_model import PhysicalRIRModel
-from signal_processing_utils import stabilize_filter
+from prego_rt60 import RT60Estimator
+from signal_processing_utils import stabilize_filter, rt_to_ap_coeffs, ap_coefs_to_rt
 from torch import Tensor
 from torch.nn import Module, Parameter
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 from torchaudio import save, load
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 import constants
 import plot_utils
 import torch
 
 
-class VPRIR(Module):
+class VPRIRPrego(Module):
     """
     This Module implements the VPRIR model ready to be fit to data.
     """
@@ -33,8 +36,8 @@ class VPRIR(Module):
         sr: int,
         force_zeros: bool,
         device: str = "cuda",
-        reference_h: Tensor = None,
-        experiment_directory: Path = None,
+        reference_h: Tensor | None = None,
+        experiment_directory: Path | str = "runs/test_prego",
         *args,
         **kwargs,
     ):
@@ -66,10 +69,20 @@ class VPRIR(Module):
             Lh=Lh,
             force_zeros=force_zeros,
         )
+        # Initialize the physical model parameters
+        rt60_estimator = RT60Estimator(sr=sr)
+        rt60_per_band = rt60_estimator.forward(reverberant_signal)
+        a_init, p_init = rt_to_ap_coeffs(rt60_per_band, sr, Lp=Lp)
+
+        self.physical_model.a.data = a_init
+        self.physical_model.p.data = p_init
+
         self.mu_h = Parameter(torch.zeros(Lh))
         self.mu_h.data[0] = 1.0
         self.r_h = Parameter(torch.ones(Lh))
+        # self.r_h = Parameter(torch.exp(-torch.arange(Lh) * a_init))
 
+        self.register_buffer("a_min", 3 * torch.log(torch.tensor(10.0)) / Lh)
         self.register_buffer("y", reverberant_signal)
         self.register_buffer("s", source)
         self.register_buffer("epsilon_sample", torch.randn(Lh))
@@ -82,7 +95,8 @@ class VPRIR(Module):
         Y: Tensor = torch.fft.fft(self.y, n=self.y.shape[0])
         self.Y_conj_S = Y.conj() * S
 
-        self.last_loss = 0
+        self.last_signal_term = 10
+        self.last_rir_term = 10
 
         exp_name = datetime.now().strftime("%Y-%m-%d %Hh%M-%S")
         self.full_exp_path = Path(experiment_directory) / exp_name
@@ -98,25 +112,33 @@ class VPRIR(Module):
         ) / self.y.shape[0]
         return expectation_diff
 
-    def loss(self):
+    def signal_loss(self):
         signal_term = (
             self.y.shape[0] * torch.log(2 * torch.pi * self.physical_model.sigma_w_2)
-            + self.expectation_diff()
-            / self.y.shape[0] ** 2
-            / self.physical_model.sigma_w_2
+            + self.expectation_diff() / self.physical_model.sigma_w_2
         )
+        self.last_signal_term = signal_term.item()
+        return signal_term
 
+    def parameter_loss(self):
         PEG_mu_h = self.physical_model.lvecmul_PEG(self.mu_h)
+        norm_PEG_mu_h = PEG_mu_h @ PEG_mu_h
         rir_term = (
             self.physical_model.Lh * torch.log(self.physical_model.sigma_epsilon_2)
             - self.physical_model.Lh
             * (self.physical_model.Lh - 1)
             * self.physical_model.a
-            + PEG_mu_h @ PEG_mu_h / self.physical_model.sigma_epsilon_2
+            + norm_PEG_mu_h / self.physical_model.sigma_epsilon_2
             + self.physical_model.trace_PEG_Rh(self.r_h)
             / self.physical_model.sigma_epsilon_2
             - torch.log(self.r_h).sum()
         )
+        self.last_rir_term = rir_term.item()
+        return rir_term
+
+    def loss(self):
+        signal_term = self.signal_loss()
+        rir_term = self.parameter_loss()
         return signal_term + rir_term
 
     def stabilize_parameters(self):
@@ -129,7 +151,7 @@ class VPRIR(Module):
         self.physical_model.sigma_w_2.data = self.physical_model.sigma_w_2.data.clamp(
             min=ALMOST_ZERO
         )
-        self.physical_model.a.data = self.physical_model.a.data.clamp(0)
+        self.physical_model.a.data = self.physical_model.a.data.clamp(min=0)
 
     def correct_gradients(self):
         """
@@ -140,34 +162,15 @@ class VPRIR(Module):
         if self.physical_model.g.grad is not None:
             self.physical_model.g.grad[0] = 0
 
-    def fit_autodiff(self, n_steps: int, log_freq: int = 50, lr: float = 1e-3):
-        if self.start_new:
-            self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-            first_step = 0
-        else:
-            first_step = int(self.optimizer.state_dict()["state"][0]["step"])
-        for k in tqdm(range(first_step, n_steps + 1)):
-            # Keep the parameters in a valid range
-            self.stabilize_parameters()
-            # Plot params to Tensorboard
-            if not k % log_freq:
-                self.log_step(k)
-            # Classical gradient descent step
-            self.optimizer.zero_grad()
-            loss = self.loss()
-            self.last_loss = loss.item()
-            loss.backward()
-            # Keep g[0] and p[0] equal to 1
-            self.correct_gradients()
-            self.optimizer.step()
-
-    def fit_custom_recipe(self, n_steps: int, log_freq: int = 50, lr: float = 1e-3):
+    def fit(self, n_steps: int, log_freq: int = 50, lr: float = 1e-3):
         if self.start_new:
             self.optimizer = torch.optim.Adam(
                 [
                     self.mu_h,
                     self.r_h,
-                    self.physical_model.a,
+                    self.physical_model.g,
+                    # self.physical_model.a,
+                    # self.physical_model.p,
                     self.physical_model.sigma_epsilon_2,
                     self.physical_model.sigma_w_2,
                 ],
@@ -176,45 +179,57 @@ class VPRIR(Module):
             first_step = 0
         else:
             first_step = int(self.optimizer.state_dict()["state"][0]["step"])
-
-        # Add g to the stack at 100 steps
-        g_step = int(0.1 * n_steps)
-        # Add p to the stack at 40%
-        p_step = int(0.4 * n_steps)
-
-        for k in tqdm(range(first_step, n_steps + 1)):
-            if k == g_step:
-                self.optimizer.add_param_group(
-                    {"params": self.physical_model.g, "lr": lr * 0.3}
-                )
-            if k == p_step:
-                self.optimizer.add_param_group(
-                    {"params": self.physical_model.p, "lr": lr * 0.1}
-                )
+        start_parameters = 2000
+        for step in tqdm(range(first_step, n_steps), desc="Fitting VPRIR model"):
             self.stabilize_parameters()
             # Plot params to Tensorboard
-            if not k % log_freq:
-                self.log_step(k)
-            # Classical gradient descent step
-            self.optimizer.zero_grad()
-            loss = self.loss()
-            self.last_loss = loss.item()
-            loss.backward()
-            self.correct_gradients()
-            self.optimizer.step()
-            # Fasten mu_h convergence
-            self.expectation_step()
+            if not (step + 1) % log_freq:
+                self.log_step(step)
+            if step % 50 == 0 and step >= start_parameters:
+                self.parameter_step()
+            else:
+                self.expectation_step()
+
+    def fit_parameters_only(self, n_steps: int, log_freq: int = 50):
+        self.optimizer = torch.optim.Adam(self.physical_model.parameters(), lr=1e-4)
+        self.mu_h.data = self.y[: self.physical_model.Lh]
+        for step in tqdm(range(n_steps), desc="Fitting VPRIR model parameters"):
+            self.stabilize_parameters()
+            # Plot params to Tensorboard
+            if not (step + 1) % log_freq:
+                self.log_step(step)
+            self.parameter_step()
+
+    def update_sigma_epsilon(self):
+        with torch.no_grad():
+            PEG_mu_h = self.physical_model.lvecmul_PEG(self.mu_h)
+            trace_PEG_Rh = self.physical_model.trace_PEG_Rh(self.r_h)
+            norm_PEG_mu_h = PEG_mu_h @ PEG_mu_h
+        self.physical_model.sigma_epsilon_2.data = (
+            norm_PEG_mu_h + trace_PEG_Rh
+        ) / self.physical_model.Lh
+
+    def update_sigma_w(self):
+        self.physical_model.sigma_w_2.data = self.expectation_diff() / self.y.shape[0]
+
+    def parameter_step(self):
+        self.stabilize_parameters()
+        self.optimizer.zero_grad()
+        loss = self.loss()
+        loss.backward()
+        self.correct_gradients()
+        self.optimizer.step()
 
     def expectation_step(self):
-        for _ in range(50):
-            self.stabilize_parameters()
-            self.optimizer.zero_grad()
-            loss = self.expectation_diff()
-            loss.backward()
-            self.optimizer.step()
+        self.stabilize_parameters()
+        self.optimizer.zero_grad()
+        loss = self.signal_loss()
+        loss.backward()
+        self.optimizer.step()
 
     def log_step(self, step: int):
-        self.logger.add_scalar("Main/Loss", self.last_loss, step)
+        self.logger.add_scalar("Main/signal_loss", self.last_signal_term, step)
+        self.logger.add_scalar("Main/rir_loss", self.last_rir_term, step)
         self.logger.add_scalar("Main/a", self.physical_model.a.item(), step)
         self.logger.add_scalar(
             "Sigma/epsilon^2", self.physical_model.sigma_epsilon_2.item(), step
@@ -332,7 +347,19 @@ class VPRIR(Module):
 
         # Load the optimizer state
         opti_state = torch.load(last_opti_path, weights_only=True)
-        self.optimizer = torch.optim.Adam(self.parameters())
+        self.optimizer = torch.optim.Adam(
+            [
+                {"params": [self.mu_h, self.r_h], "lr": 0.5 * 1e-3},
+                {
+                    "params": [
+                        self.physical_model.g,
+                        self.physical_model.sigma_epsilon_2,
+                        self.physical_model.sigma_w_2,
+                    ],
+                    "lr": 1e-3,
+                },
+            ]
+        )
         self.optimizer.load_state_dict(opti_state)
         self.last_loss = self.loss().item()
         self.start_new = False

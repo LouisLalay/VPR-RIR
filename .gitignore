@@ -18,3 +18,7 @@
 **/.vscode
 **/test*
 **/TODO*
+**/lightning_logs/
+tensorboard.sh
+tensor_ops.py
+rt_60_estimators.py

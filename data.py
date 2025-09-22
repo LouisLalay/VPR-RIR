@@ -1,6 +1,7 @@
 from pandas import DataFrame, read_csv
 from pathlib import Path
 from torch import Tensor
+from torch.nn.functional import pad
 from torch.utils.data import Dataset
 from torchaudio import load
 from torchaudio.functional import convolve, resample
@@ -63,7 +64,7 @@ def prepare_audios(
     scale = y.abs().max() * 5 / 4
     y = y / scale
 
-    noise = torch.nn.functional.pad(
+    noise = pad(
         noise,
         (0, y.shape[0] - noise.shape[0]),
         mode="constant",
@@ -77,3 +78,83 @@ def prepare_audios(
     noisy_y = y + noise
 
     return rir / scale, noise, y, noisy_y
+
+
+def mixing_model(
+    source: Tensor,
+    rir: Tensor,
+    noise: Tensor,
+    snr_dB: float,
+    sr: int,
+    max_duration_s: float,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """
+    Returns y = source * rir + noise adapted to the desired SNR.
+    Truncate y to the desired max duration
+    """
+    # Reverberant signal
+    y = convolve(source, rir, mode="full")
+
+    max_samples = int(max_duration_s * sr)
+    y = y[:max_samples]
+
+    noise = pad(
+        noise,
+        (0, max_samples - noise.shape[0]),
+        mode="constant",
+        value=0,
+    )
+
+    noise_power = (noise @ noise) / noise.shape[0]
+    signal_power = (y @ y) / max_samples
+    target_noise_power = signal_power * 10 ** (-snr_dB / 10)
+
+    noise = noise * (target_noise_power / noise_power).sqrt()
+
+    noisy_y = y + noise
+
+    return noise, y, noisy_y
+
+
+def test():
+    import matplotlib.pyplot as plt
+
+    source_file = Path("data/example_audios/source.flac")
+    rir_file = Path("data/example_audios/rir.wav")
+    noise_file = Path("data/example_audios/noise.wav")
+
+    source, sr1 = load(source_file)
+    rir, sr2 = load(rir_file)
+    noise, sr3 = load(noise_file)
+
+    sr = min(sr1, sr2, sr3)
+    source = resample(source[0], orig_freq=sr1, new_freq=sr)
+    rir = resample(rir[0], orig_freq=sr2, new_freq=sr)
+    noise = resample(noise[0], orig_freq=sr3, new_freq=sr)
+
+    max_duration = 4.0
+    snr_dB = 0
+
+    noise, y, noisy_y = mixing_model(
+        source=source,
+        rir=rir,
+        noise=noise,
+        snr_dB=snr_dB,
+        sr=sr,
+        max_duration_s=max_duration,
+    )
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    axes[0, 0].plot(source)
+    axes[0, 0].set_title("Source")
+    axes[0, 1].plot(rir)
+    axes[0, 1].set_title("RIR")
+    axes[1, 0].plot(noise)
+    axes[1, 0].set_title("Noise")
+    axes[1, 1].plot(noisy_y)
+    axes[1, 1].set_title(f"Noisy reverberant signal (SNR={snr_dB} dB)")
+    plt.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    test()

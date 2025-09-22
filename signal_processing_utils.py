@@ -91,7 +91,7 @@ def impulse_response(
         (numerator.detach().cpu().numpy(), denominator.detach().cpu().numpy(), 1),
         n=n_fft,
     )
-    g_inv = torch.tensor(y[0]).squeeze()
+    g_inv = torch.tensor(np.asarray(y)[0]).squeeze()
 
     return g_inv.to(denominator)
 
@@ -120,3 +120,59 @@ def linear_regression(x: Tensor, y: Tensor) -> tuple[float, float]:
     b = (s_y - a * s_x).item() / N
 
     return a, b
+
+
+def rt_to_ap_coeffs(
+    rt_60: torch.Tensor,
+    sr: int,
+    Lp: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    A function that derives the ap coefficients from the per-band RT60 values
+
+    Args
+    --
+        rt_60: (K,) per-band RT60 values
+        sr: int sample rate
+        Lp: int number of ap coefficients to compute
+    Returns
+    --
+        a: (1,) global decay rate
+        p: (Lp,) per-band decay rates
+    Note
+    --
+        This function is an approximation because we only have the magnitude of the
+        frequency response and not the phase.
+    """
+    a_plus_lnFp = (3 * torch.log(torch.tensor(10))) / (sr * rt_60)
+    exp_a_Fp = torch.exp(a_plus_lnFp)
+    exp_a_p: torch.Tensor = torch.fft.irfft(exp_a_Fp, n=Lp)
+    exp_a = exp_a_p[0]
+    p = exp_a_p / exp_a
+    a = torch.log(exp_a)
+    return a, p
+
+
+def ap_coefs_to_rt(
+    a: torch.Tensor,
+    p: torch.Tensor,
+    sr: int,
+    n_bands: int,
+) -> torch.Tensor:
+    """
+    A function that derives the per-band RT60 values from the ap coefficients
+    Args
+    --
+        a: (1,) global decay rate
+        p: (Lp,) per-band decay rates
+        sr: int sample rate
+        n_bands: int number of frequency bands
+    Returns
+    --
+        rt_60: (K,) per-band RT60 values
+    Note
+    --
+        This function is exact
+    """
+    fp: torch.Tensor = torch.fft.rfft(p, n=2 * n_bands - 1)
+    return (3 * torch.log(torch.tensor(10))) / (sr * (a + fp.abs().log()))

@@ -1,5 +1,5 @@
 # Global sampling rate
-sr: &sr 8000
+sr: &sr 16000
 
 # Informations regarding the source files
 source:
@@ -14,21 +14,21 @@ rir:
 # Informations regarding the noise files
 noise:
   metadata_file: data/noise.csv
-  snr_dB: 10
+  snr_dB: -3
   sr: *sr
 
 # Model parameters
 model:
-  Lh: 600
-  Lg: 20
-  Lp: 10
+  Lh: 4000
+  Lg: 64
+  Lp: 5
   force_zeros: False
   device: cuda
   sr: *sr
-  experiment_directory: "runs/test"
+  experiment_directory: "runs/dummy"
 
 # Experiment parameters
 experiment:
-  n_steps: 1000
-  log_freq: 100
+  n_steps: 20000
+  log_freq: 1000
   lr: 0.001
